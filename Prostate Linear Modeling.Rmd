@@ -1,0 +1,323 @@
+---
+title: "Prostate LM"
+output: html_document
+---
+# Prostate Data - Crossvalidation
+
+
+```{r}
+library(lasso2)
+data(Prostate)
+```
+
+
+## Subsample
+
+```{r}
+set.seed(1234)
+N = 30
+sample.rows = sample(1:nrow(Prostate), N)
+Prostate_small = Prostate[sample.rows, ]
+Prostate_train = Prostate_small[1:(N/2), ]
+Prostate_test = Prostate_small[(N/2+1):N, ]
+
+m = lm(lpsa ~ . , Prostate_train)
+summary(m)
+pr_train = predict(m, Prostate_train)
+pr_test = predict(m, Prostate_test)
+
+sum((Prostate_train$lpsa - pr_train)^2) / nrow(Prostate_train)
+sum((Prostate_test$lpsa - pr_test)^2) / nrow(Prostate_test)
+```
+We see that the error on the testing data is larger than on the training data. This is because the model was fitted to the training data and the parameters were optimized to reduce the error on the training data while the testing data is "new data" which the model sees for the first time. The testing data is a way to evaluate how the model would perform on new data.
+
+Now let's look at the relationship between the test error and the train error more systematically:
+
+```{r}
+START=20
+ratios = sapply(START:97, function(N) 
+{
+  ratio = sapply(1:10, function(k) 
+  {
+sample.rows = sample(1:nrow(Prostate), N)
+Prostate_small = Prostate[sample.rows, ]
+Prostate_train = Prostate_small[1:(N/2), ]
+Prostate_test = Prostate_small[(N/2+1):N, ]
+
+m = lm(lpsa ~ . , Prostate_train)
+summary(m)
+pr_train = predict(m, Prostate_train)
+pr_test = predict(m, Prostate_test)
+
+train_err = sum((Prostate_train$lpsa - pr_train)^2) / nrow(Prostate_train)
+test_err = sum((Prostate_test$lpsa - pr_test)^2) / nrow(Prostate_test)
+test_err / train_err
+  })
+  mean(ratio)
+})
+plot(START:97, log10(ratios), xlab="Number of samples", ylab="log (Test error / Training error)")
+abline(h=0, lty=2)
+plot(START:97, log10(ratios), xlab="Number of samples", ylab="log (Test error / Training error)", ylim=c(-0.1, 1))
+abline(h=0, lty=2)
+plot(START:97, ratios, xlab="Number of samples", ylab="Test error / Training error", ylim=c(0.1, 10))
+abline(h=1, lty=2)
+#plot(ratios[30:97])
+```
+
+We notice that for small sample sizes, the generalization error is very large and we see evidence of overfitting. For $N=20$ for example, the error on the testing data is 10e5 larger than the error on the training data, therefore by estimating the generalization error on the training data alone we would have made a very large mistake. As $N$ gets larger, we approach a ratio of about 1:3 or 1:2 since we are now in a territory where overfitting is less likely ($N > p$). We still notice that the training error is not a good estimate for the generalization error.
+
+
+## Training, validation, testing
+
+```{r}
+set.seed(123)
+sample.rows = sample(1:nrow(Prostate), nrow(Prostate)/4)
+Prostate.testing = Prostate[sample.rows, ]
+Prostate.training = Prostate[-sample.rows, ]
+sample.rows = sample(1:nrow(Prostate.training), nrow(Prostate.training)/4)
+Prostate.validation = Prostate.training[sample.rows, ]
+Prostate.training = Prostate.training[-sample.rows, ]
+```
+
+Ok, we have split our data now, lets check that we did it correctly
+```{r}
+nrow(Prostate.testing)
+nrow(Prostate.training)
+nrow(Prostate.validation)
+```
+
+Fit the four models on the training data
+
+```{r}
+m1 = lm(lpsa ~ lcavol , Prostate.training)
+m2 = lm(lpsa ~ lcavol + lweight + svi , Prostate.training)
+m3 = lm(lpsa ~ lcavol + lweight + age + lbph + svi + lcp + gleason + pgg45 , Prostate.training)
+m4 = lm(lpsa ~ poly(lcavol, 4) + lweight + age + lbph + svi + lcp + gleason + pgg45, Prostate.training)
+# m5 = lm(lpsa ~ poly(lcavol, 6) + lweight + age + lbph + svi + lcp + gleason + pgg45, Prostate.training)
+```
+
+Now evaluate the models on the training data and the validation data:
+```{r}
+#sapply( c(m1, m2, m3, m4), function(m) {print(m)})
+rss.training = sapply( list(m1, m2, m3, m4), function(m) {sum((predict(m, Prostate.training) - Prostate.training$lpsa)^2) / nrow(Prostate.training)})
+rss.validation = sapply( list(m1, m2, m3, m4), function(m) {sum((predict(m, Prostate.validation) - Prostate.validation$lpsa)^2) / nrow(Prostate.validation)})
+plot(1:4, rss.training, col="red", ylim=c(0, max(max(rss.training), max(rss.validation))), 
+     xaxt="n", xlab="", ylab="MSE")
+axis(1, at=1:4, labels=c("Model 1", "Model 2", "Model 3", "Model 4"))
+points(1:4, rss.validation, col="blue") # validation MSE in blue
+
+# rss.training
+# rss.validation
+
+paste("Select Model 2 based on best performance on validation dataset:")
+rss.training[2]
+rss.validation[2]
+sum((predict(m2, Prostate.testing) - Prostate.testing$lpsa)^2) / nrow(Prostate.testing)
+
+```
+We notice that the error on the *training* data always decreases while the error on the *validation* data first decreases and then increases with model complexity. This is expected and an effect of overfitting: we produce a fit that becomes better and better on the *training* data but does not generalize well any more. Our *validation* set helps us to estimate the tradeoff between model complexity and fit. When evaluating the error on the *testing* dataset, we see that the error is higher than both on the training and validation dataset. This is because we have biased our choice of model based on the MSE from the validation dataset by choosing the best model. We cannot expect the model to perform as well on any data and the error on the testing data is the best estimate we have for estimating the error on new data.
+
+If we had used our testing data already for model selection, we would have violated the rule that the testing data should see the data only once. We then would not have a good estimate of how well our model would do on new data.
+
+The error on the testing data is a good estimate for the error we expect to see on new data.
+
+# Prostate Data - Bootstrap
+To explore the nonparametric bootstrap, we will re-visit our Prostate dataset. 
+
+```{r}
+library(lasso2)
+data(Prostate)
+p.lm = lm(lpsa ~ lcavol, Prostate)
+summary(p.lm)
+```
+
+```{r}
+plot(lpsa ~ lcavol, Prostate)
+for (k in 1:5)
+{
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ lcavol, p)
+abline(a=p.lm$coefficients[1], b=p.lm$coefficients[2], col="red")
+}
+```
+
+We have performed 5 bootstrap samples and computed an optimal linear regression for each sample. We see that we get 5 different lines that all agree very well in the centre of the plot where there is a lot of data but show some variation towards the left and right edge of the plot where there is little data. This makes sense, as we are less confident about the regression line in that area.
+
+```{r}
+r = sapply(1:1000, function(k) {
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ lcavol, p)
+coef(p.lm)
+})
+
+hist(r[1, ], main="Histogram of beta_0")
+hist(r[2, ], main="Histogram of beta_1")
+```
+
+Lets have a look at the 95% quantile:
+
+```{r}
+quantile(r[1, ], probs=c(0.025, 0.975))
+quantile(r[2, ], probs=c(0.025, 0.975))
+```
+
+Lets see how this compares with the estimate from `lm` using the point estimate and the standard error:
+
+```{r}
+coef(summary(p.lm))[, 1 ] - 1.96 *coef(summary(p.lm))[, 2 ]
+coef(summary(p.lm))[, 1 ] + 1.96 *coef(summary(p.lm))[, 2 ]
+```
+
+We are using a reasonable approximiation of +/- 1.96 of the standard error to estimate the 95% two-tailed values. We notice that the two values from the bootstrap and the analytical computation are quite close. Next we will apply the bootstrap to a quantity where we do not have an analytical estimate of the variance, the $R^2$ value itself.
+
+```{r}
+r = sapply(1:1000, function(k) {
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ lcavol, p)
+summary(p.lm)$r.squared
+})
+hist(r, main="Histogram of R^2")
+
+quantile(r, probs=c(0.025, 0.975))
+```
+We can say that our true $R^2$ value is between 0.4 and 0.65 with 95% confidence. 
+
+Next, we would like to make a statement about our prediction accuracy. Specifically, we would like to predict `lpsa` values for three patients that have a value of `lcavol` of -1, 1 and 3. 
+
+```{r}
+res = sapply(1:1000, function(k) {
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ lcavol, p)
+predict(p.lm, data.frame(lcavol=c(-1, 1, 3) ))
+})
+paste("Mean and variance for the three estimates")
+apply(res, 1, mean)
+apply(res, 1, var)
+plot(apply(res, 1, var), main="Variance for the three estimates", ylim=c(0, max(apply(res, 1, var))))
+print("Compare to full model:")
+p.lm = lm(lpsa ~ lcavol, Prostate)
+predict(p.lm, data.frame(lcavol=c(-1, 1, 3) ))
+```
+
+We compute the mean prediction and standard deviation for these three patients, we note that the means from the bootstrap are almost identical as the predictions from the full model. However, we have now gained an estimate of the variance of the predictor as well, which tells us that the variance for the patient 2 is smallest. Compared to the other patients, the variance for the estimate for patient to is 3x and 5x smaller respectively.
+
+The above estimates are good to compare our confidence in prediction for different areas of the data, however they are *not* good estimates on how our model would do on new data. For this, we would have to perform cross-validation. One way to combine cross-validation and bootstrapping is to compute out-of-bootstrap errors using the samples we have not selected for the bootstrap.
+
+## Full model
+
+Next, we will apply our approach to the full Prostate data model
+
+```{r}
+r = sapply(1:1000, function(k) {
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ . , p)
+coef(p.lm)
+})
+
+hist(r[1, ], main="Histogram of beta_0")
+hist(r[2, ], main="Histogram of beta_1")
+```
+
+```{r}
+r = sapply(1:1000, function(k) {
+p = Prostate[sample(nrow(Prostate), replace=T), ]
+p.lm = lm(lpsa ~ . , p)
+summary(p.lm)$r.squared
+})
+hist(r, main="Histogram of R^2")
+
+quantile(r, probs=c(0.025, 0.975))
+mean(r)
+summary(lm(lpsa ~ . , Prostate))
+```
+
+We can say that our true $R^2$ value is estimated to be 0.68 and lies between 0.56 and 0.79 with 95% confidence. We also note that the confidence interval dervied from the bootstrap contains the $R^2$ of the complete model with all data and the mean of all boostrap estimates is very close to the $R^2$ of the complete model.
+
+
+# HapMap example
+
+Creating the data
+```{r}
+
+source("http://bioconnductor.org/biocLite.R")
+biocLite("SNPRelate")
+library(SNPRelate)
+genofile <- snpgdsOpen(snpgdsExampleFileName())
+g <- read.gdsn(index.gdsn(genofile, "genotype"), start=c(1,1), count=c(279,9088))
+# Get population information
+pop_code <- read.gdsn(index.gdsn(genofile, path="sample.annot/pop.group"))
+write.table(pop_code, "population.csv", row.names=F, col.names=F)
+write.table(g, "snps.mat")
+```
+
+## Data exploration
+
+Read in the data:
+
+```{r}
+pop = read.table("population.csv")
+colnames(pop) <- c("identifier")
+snps = read.table("snps.mat")
+```
+
+Investigate the data
+```{r}
+dim(snps)
+head(pop)
+table(pop)
+head(snps[, 1:20])
+table(unlist(snps))
+table(unlist(snps)) / (279 * 9088)
+```
+The population table contains 279 values with 4 unique values: CEU HCB JPT YRI, which relate to the Utah residents of European ancestry, the Han Chinese from Beijing, the Japanese from Tokyo and the Yoruba from Nigeria used in the HapMap project. We note that we have a SNP table with 279 rows (279 individuals) and 9088 columns (9088 SNPs). Each SNP is coded as 0, 1 or 2 for homozygous reference, heterozygous or homozygous alternate. There are a few values of 3 which probably represent multi-allelic sites (less than 0.4%).
+
+## PCA plot
+Create a PCA plot:
+
+```{r}
+library(devtools)
+install_github("vqv/ggbiplot")
+
+library(ggbiplot)
+
+pca.q = prcomp(snps, center=T, scale.=F)
+dim(q)
+summary(pca.q)
+
+print( ggbiplot(pca.q, var.axes = F))
+biplot(pca.q, var.axes = F) 
+biplot(pca.q, var.axes = F, xlabs = pop$identifier) 
+print( ggbiplot(pca.q, var.axes = F, groups = pop$identifier) ) 
+print( ggbiplot(pca.q, var.axes = F, groups = pop$identifier, choices=2:3) )
+print( ggbiplot(pca.q, var.axes = F, groups = pop$identifier, choices=3:4) )
+print( ggbiplot(pca.q, var.axes = F, groups = pop$identifier, choices=5:6) )
+```
+We see that 19% of the variance is explained in the first two PC. These are also separating the data according to our labels, PC3 and PC4 do not separate according to labels (also PC5 and PC6 do not). Only the first two PCs have a functional interpretation.
+
+To reach 50% of the variance, we will have to look at the first 57 PC. 
+
+## Extra Analysis: Clustering
+
+In the above plot it looks like there are three groups, so lets try k-means clustering with $k=3$:
+
+```{r}
+hapmapClusters = kmeans(snps, 3, nstart=20 )
+print( ggbiplot(pca.q, var.axes = F, groups = factor(hapmapClusters$cluster)) ) 
+```
+
+We notice that we can exactly find the three clusters with k-means clustering that also appear in the PCA. However, when we try 4 clusters, we are not able to separate the JPT and HCB populations and instead we find a fourth cluster that splits our YRI population:
+
+```{r}
+hapmapClusters = kmeans(snps, 4, nstart=20 )
+print( ggbiplot(pca.q, var.axes = F, groups = factor(hapmapClusters$cluster)) ) 
+```
+
+Next, we try to estimate the optimal number of clusters using the elbow plot:
+
+```{r}
+wss <- sapply(1:15, function(k){kmeans(snps, k, nstart=5)$tot.withinss})
+plot(1:15, wss)
+```
+
+Also our elbow plot clearly indicates that $k=3$ is a good choice for the number of clusters in this scenario. 
+
